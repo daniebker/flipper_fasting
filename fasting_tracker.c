@@ -20,6 +20,7 @@
 #define ADJUST_STEP_S  (15 * 60)
 #define MIN_RECORD_S   60
 #define SECONDS_IN_DAY (24UL * 60UL * 60UL)
+#define MAX_BACKDATE_S (7UL * SECONDS_IN_DAY)
 
 typedef struct {
     const char* name;
@@ -60,6 +61,7 @@ typedef struct {
 
 typedef enum {
     ScreenMain,
+    ScreenPickStart,
     ScreenConfirmEnd,
     ScreenHistory,
 } Screen;
@@ -69,6 +71,7 @@ typedef struct {
     Screen screen;
     uint8_t history_scroll;
     uint8_t history_sel;
+    uint32_t pick_ts; /* time chosen in start/end picker; 0 = "now" */
     FuriMutex* mutex;
 } FastingApp;
 
@@ -119,6 +122,47 @@ static void format_datetime(char* buf, size_t len, uint32_t ts) {
         (unsigned)dt.minute);
 }
 
+static void format_clock(char* buf, size_t len, uint32_t ts) {
+    DateTime dt;
+    datetime_timestamp_to_datetime(ts, &dt);
+    snprintf(buf, len, "%02u:%02u", (unsigned)dt.hour, (unsigned)dt.minute);
+}
+
+/* ---------- time picker (0 = now, otherwise an absolute timestamp) ---------- */
+
+static uint32_t pick_resolve(uint32_t pick) {
+    return pick ? pick : now_ts();
+}
+
+/* Step to the previous quarter hour, not going below min_ts. */
+static void pick_earlier(uint32_t* pick, uint32_t min_ts) {
+    uint32_t base = pick_resolve(*pick);
+    if(base <= min_ts) return;
+    uint32_t next = ((base - 1) / ADJUST_STEP_S) * ADJUST_STEP_S;
+    if(next < min_ts) next = min_ts;
+    *pick = next;
+}
+
+/* Step to the next quarter hour; reaching the present snaps back to "now". */
+static void pick_later(uint32_t* pick) {
+    if(*pick == 0) return;
+    uint32_t next = (*pick / ADJUST_STEP_S + 1) * ADJUST_STEP_S;
+    *pick = next >= now_ts() ? 0 : next;
+}
+
+/* Earliest allowed start: not before the previous fast ended, and at most 7 days back. */
+static uint32_t earliest_start(const FastingApp* app) {
+    uint32_t now = now_ts();
+    uint32_t min_ts = now > MAX_BACKDATE_S ? now - MAX_BACKDATE_S : 0;
+    if(app->data.last_end > min_ts && app->data.last_end <= now) min_ts = app->data.last_end;
+    return min_ts;
+}
+
+/* Earliest allowed end: long enough after the start for the fast to be logged. */
+static uint32_t earliest_end(const FastingApp* app) {
+    return app->data.fast_start + MIN_RECORD_S;
+}
+
 /* ---------- persistence ---------- */
 
 static void state_defaults(PersistState* s) {
@@ -165,14 +209,13 @@ static void state_save(const PersistState* s) {
 
 /* ---------- actions (call with mutex held) ---------- */
 
-static void fast_start(FastingApp* app) {
+static void fast_start(FastingApp* app, uint32_t start) {
     app->data.fasting = 1;
-    app->data.fast_start = now_ts();
+    app->data.fast_start = start;
     app->data.goal_notified = 0;
 }
 
-static void fast_end(FastingApp* app) {
-    uint32_t end = now_ts();
+static void fast_end(FastingApp* app, uint32_t end) {
     uint32_t start = app->data.fast_start;
     if(end > start && end - start >= MIN_RECORD_S) {
         PersistState* d = &app->data;
@@ -193,7 +236,8 @@ static void fast_adjust_start(FastingApp* app, int32_t delta) {
     uint32_t start = app->data.fast_start;
     if(delta < 0) {
         uint32_t d = (uint32_t)(-delta);
-        start = start > d ? start - d : 0;
+        uint32_t min_ts = earliest_start(app);
+        start = start > min_ts + d ? start - d : min_ts;
     } else {
         start += (uint32_t)delta;
         if(start > now) start = now;
@@ -274,30 +318,67 @@ static void draw_main(Canvas* canvas, FastingApp* app) {
     elements_button_right(canvas, "Log");
 }
 
+static void draw_time_picker(Canvas* canvas, const char* title, uint32_t pick) {
+    char buf[96];
+    char hm[32];
+    uint32_t ts = pick_resolve(pick);
+
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str_aligned(canvas, 64, 10, AlignCenter, AlignBottom, title);
+
+    format_clock(buf, sizeof(buf), ts);
+    canvas_set_font(canvas, FontBigNumbers);
+    canvas_draw_str_aligned(canvas, 64, 24, AlignCenter, AlignCenter, buf);
+
+    /* up/down arrows hint either side of the time */
+    canvas_draw_triangle(canvas, 22, 20, 7, 4, CanvasDirectionBottomToTop);
+    canvas_draw_triangle(canvas, 22, 28, 7, 4, CanvasDirectionTopToBottom);
+    canvas_draw_triangle(canvas, 105, 20, 7, 4, CanvasDirectionBottomToTop);
+    canvas_draw_triangle(canvas, 105, 28, 7, 4, CanvasDirectionTopToBottom);
+
+    canvas_set_font(canvas, FontSecondary);
+    if(pick == 0) {
+        snprintf(buf, sizeof(buf), "Now");
+    } else {
+        format_hm(hm, sizeof(hm), elapsed_since(ts));
+        snprintf(buf, sizeof(buf), "%s ago", hm);
+    }
+    canvas_draw_str_aligned(canvas, 64, 41, AlignCenter, AlignBottom, buf);
+}
+
+static void draw_pick_start(Canvas* canvas, FastingApp* app) {
+    char buf[96];
+    char clock[16];
+    draw_time_picker(canvas, "Start fast at", app->pick_ts);
+
+    uint32_t goal_at = pick_resolve(app->pick_ts) + goal_seconds(app);
+    format_clock(clock, sizeof(clock), goal_at);
+    snprintf(buf, sizeof(buf), "%s goal at %s", plans[app->data.plan].name, clock);
+    canvas_draw_str_aligned(canvas, 64, 51, AlignCenter, AlignBottom, buf);
+
+    elements_button_left(canvas, "Cancel");
+    elements_button_center(canvas, "Start");
+}
+
 static void draw_confirm(Canvas* canvas, FastingApp* app) {
     char buf[96];
     char hm[32];
-    uint32_t elapsed = elapsed_since(app->data.fast_start);
-    uint32_t target = goal_seconds(app);
+    draw_time_picker(canvas, "End fast at", app->pick_ts);
 
-    canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str_aligned(canvas, 64, 4, AlignCenter, AlignTop, "End fast now?");
-
-    canvas_set_font(canvas, FontSecondary);
-    format_hm(hm, sizeof(hm), elapsed);
-    snprintf(buf, sizeof(buf), "Fasted %s", hm);
-    canvas_draw_str_aligned(canvas, 64, 22, AlignCenter, AlignTop, buf);
-
-    if(elapsed < target) {
-        format_hm(hm, sizeof(hm), target - elapsed);
-        snprintf(buf, sizeof(buf), "%s short of goal", hm);
-    } else {
-        snprintf(buf, sizeof(buf), "Goal reached - well done!");
-    }
-    canvas_draw_str_aligned(canvas, 64, 34, AlignCenter, AlignTop, buf);
+    uint32_t end = pick_resolve(app->pick_ts);
+    uint32_t start = app->data.fast_start;
+    uint32_t fasted = end > start ? end - start : 0;
+    format_hm(hm, sizeof(hm), fasted);
+    snprintf(
+        buf,
+        sizeof(buf),
+        "Fasted %s %s",
+        hm,
+        fasted >= goal_seconds(app) ? "- goal met" : "- short");
+    canvas_draw_str_aligned(canvas, 64, 51, AlignCenter, AlignBottom, buf);
 
     elements_button_left(canvas, "Cancel");
-    elements_button_right(canvas, "End");
+    elements_button_center(canvas, "End");
 }
 
 static void draw_history(Canvas* canvas, FastingApp* app) {
@@ -367,6 +448,9 @@ static void draw_callback(Canvas* canvas, void* ctx) {
     case ScreenMain:
         draw_main(canvas, app);
         break;
+    case ScreenPickStart:
+        draw_pick_start(canvas, app);
+        break;
     case ScreenConfirmEnd:
         draw_confirm(canvas, app);
         break;
@@ -393,12 +477,8 @@ static bool handle_input(FastingApp* app, const InputEvent* ev) {
     case ScreenMain:
         if(press && ev->key == InputKeyBack) return false;
         if(press && ev->key == InputKeyOk) {
-            if(app->data.fasting) {
-                app->screen = ScreenConfirmEnd;
-            } else {
-                fast_start(app);
-                changed = true;
-            }
+            app->pick_ts = 0;
+            app->screen = app->data.fasting ? ScreenConfirmEnd : ScreenPickStart;
         } else if(press && ev->key == InputKeyLeft) {
             app->data.plan = (app->data.plan + 1) % PLAN_COUNT;
             if(app->data.fasting && elapsed_since(app->data.fast_start) < goal_seconds(app)) {
@@ -418,15 +498,27 @@ static bool handle_input(FastingApp* app, const InputEvent* ev) {
         }
         break;
 
-    case ScreenConfirmEnd:
-        if(press && (ev->key == InputKeyRight || ev->key == InputKeyOk)) {
-            fast_end(app);
+    case ScreenPickStart:
+    case ScreenConfirmEnd: {
+        bool is_start = app->screen == ScreenPickStart;
+        if(press && ev->key == InputKeyOk) {
+            uint32_t ts = pick_resolve(app->pick_ts);
+            if(is_start) {
+                fast_start(app, ts);
+            } else {
+                fast_end(app, ts);
+            }
             changed = true;
             app->screen = ScreenMain;
         } else if(press && (ev->key == InputKeyLeft || ev->key == InputKeyBack)) {
             app->screen = ScreenMain;
+        } else if(repeatable && ev->key == InputKeyUp) {
+            pick_earlier(&app->pick_ts, is_start ? earliest_start(app) : earliest_end(app));
+        } else if(repeatable && ev->key == InputKeyDown) {
+            pick_later(&app->pick_ts);
         }
         break;
+    }
 
     case ScreenHistory:
         if(press && (ev->key == InputKeyBack || ev->key == InputKeyLeft)) {
