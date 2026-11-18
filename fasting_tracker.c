@@ -205,7 +205,7 @@ static void fast_adjust_start(FastingApp* app, int32_t delta) {
 /* ---------- drawing ---------- */
 
 static void draw_main(Canvas* canvas, FastingApp* app) {
-    char buf[32];
+    char buf[96];
     const PersistState* d = &app->data;
     const FastingPlan* plan = &plans[d->plan];
 
@@ -248,7 +248,7 @@ static void draw_main(Canvas* canvas, FastingApp* app) {
 
     /* Status line */
     canvas_set_font(canvas, FontSecondary);
-    char hm[16];
+    char hm[32];
     if(d->fasting) {
         if(elapsed >= target) {
             format_hm(hm, sizeof(hm), elapsed - target);
@@ -275,8 +275,8 @@ static void draw_main(Canvas* canvas, FastingApp* app) {
 }
 
 static void draw_confirm(Canvas* canvas, FastingApp* app) {
-    char buf[32];
-    char hm[16];
+    char buf[96];
+    char hm[32];
     uint32_t elapsed = elapsed_since(app->data.fast_start);
     uint32_t target = goal_seconds(app);
 
@@ -301,8 +301,8 @@ static void draw_confirm(Canvas* canvas, FastingApp* app) {
 }
 
 static void draw_history(Canvas* canvas, FastingApp* app) {
-    char buf[40];
-    char hm[16];
+    char buf[96];
+    char hm[32];
     const PersistState* d = &app->data;
 
     canvas_set_font(canvas, FontPrimary);
@@ -332,7 +332,7 @@ static void draw_history(Canvas* canvas, FastingApp* app) {
         const FastRecord* r = &d->history[i];
         uint32_t dur = r->end - r->start;
         bool hit = dur >= (uint32_t)r->goal_hours * 3600UL;
-        char when[16];
+        char when[64];
         format_datetime(when, sizeof(when), r->start);
         format_hm(hm, sizeof(hm), dur);
         int y = 23 + row * 11;
