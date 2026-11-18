@@ -1,0 +1,14 @@
+App(
+    appid="fasting_tracker",
+    name="Fasting Tracker",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="fasting_tracker_app",
+    requires=["gui", "storage", "notification"],
+    stack_size=2 * 1024,
+    fap_category="Tools",
+    fap_icon="fasting_tracker.png",
+    fap_version="1.0",
+    fap_description="Track intermittent fasting: timer, goal alerts and history",
+    fap_author="daniebker",
+    fap_weburl="https://github.com/daniebker/flipper_fasting",
+)
