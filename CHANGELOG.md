@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1] - 2026-11-18
+
 ### Added
 
 - Start time picker shown when starting a fast. It defaults to now; Up/Down move it in 15-minute steps (snapping to the quarter hour) and show when the goal will be reached.
@@ -30,5 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - State saved to the SD card, so a fast continues across app exits and reboots.
 - GitHub Actions build against the release and dev SDKs.
 
-[Unreleased]: https://github.com/daniebker/flipper_fasting/compare/e52e7ec...HEAD
-[1.0]: https://github.com/daniebker/flipper_fasting/commit/e52e7ec
+[Unreleased]: https://github.com/daniebker/flipper_fasting/compare/v1.1...HEAD
+[1.1]: https://github.com/daniebker/flipper_fasting/compare/v1.0...v1.1
+[1.0]: https://github.com/daniebker/flipper_fasting/releases/tag/v1.0
